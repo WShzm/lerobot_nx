@@ -1,0 +1,9 @@
+# 目标平台：Jetson Xavier NX、Ubuntu 20.04、ROS2 Foxy、Python 3.8。
+# 请使用 ROS2 对应的 Python 解释器安装，例如：
+# /usr/bin/python3 -m pip install --user -r requirements.txt
+#
+# rclpy、sensor_msgs 和 cv_bridge 属于 ROS2 系统包，pip 无法安装 ROS 发行版，故不在此列出。
+feetech-servo-sdk==1.0.0
+pyserial>=3.5
+# JetPack/ROS 通常已提供 NumPy；此版本范围仍支持 Python 3.8。
+numpy>=1.19,<1.25
