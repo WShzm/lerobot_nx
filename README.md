@@ -1,18 +1,28 @@
-# SO101 Xavier NX 运行工程
+# SO101 Xavier NX 统一运行时
 
 这是面向 Jetson Xavier NX、Ubuntu 20.04、ROS2 Foxy、Python 3.8 的轻量运行工程。
-它不导入 LeRobot、PyTorch、Hugging Face 数据集或视频编码器。任一时刻仅一个运行模式
-占用机械臂串口。
+工程仅有一个启动脚本：`lerobot_nx.py`。程序是一个包含两种状态的状态机：
+
+| 状态 | 作用 | 进入方式 |
+|---|---|---|
+| 从臂控制 | 执行 ROS2 话题命令，或使用预留的云端控制后端 | 程序启动默认进入；示教时按 `c` 返回 |
+| 主从示教 | 主臂控制从臂，同时记录相机和关节原始数据 | 在从臂控制状态按 `r` |
+
+按 `q` 或 `Ctrl+C` 安全退出。任意切换都会先失能从臂扭矩，因此两个状态不会同时占用或控制机械臂。
 
 ```text
+lerobot_nx.py           唯一入口和命令行参数
 so101_nx/
-  calibration.py       读取 LeRobot 标定 JSON，并在角度与编码器刻度间转换
-  feetech.py           STS3215 串口控制、标定校验与扭矩控制
-  ros_camera.py        订阅 RealSense ROS2 彩色和对齐深度图像
-  recorder.py          主臂到从臂遥操作及原始数据采集
-  topic_control.py     ROS2 控制话题到从臂的执行和状态发布
-  cloud_gateway.py     云端动作校验并转发至本地控制话题
+  runtime.py            双状态状态机与状态切换
+  control.py            ROS2 话题控制后端和云端控制预留接口
+  teaching.py            主从示教与原始 episode 写入
+  keyboard.py            r、c、q 非阻塞键盘读取
+  calibration.py         LeRobot 标定 JSON 与角度/编码器刻度转换
+  feetech.py             STS3215 串口控制、标定校验与扭矩控制
+  ros_camera.py          RealSense ROS2 彩色和对齐深度图像订阅
 ```
+
+该工程不导入 LeRobot、PyTorch、Hugging Face 数据集或视频编码器。
 
 ## 安装
 
@@ -41,21 +51,21 @@ sudo usermod -aG dialout "$USER"
 将由 LeRobot 为这对实际主从臂生成的标定 JSON 复制到 NX。禁止使用其他机械臂的标定文件。
 启动时，工程会对比 JSON 与电机 EEPROM 中的关节行程；不一致时会在使能扭矩前停止。
 
-## 模式一：主从采集
+## 启动
 
-该模式读取已标定的主臂、控制从臂并记录原始数据。先在另一个终端启动 RealSense：
+示教状态需要 RealSense。建议在另一个终端启动相机；控制状态不依赖相机：
 
 ```bash
 source /opt/ros/foxy/setup.bash
 ros2 launch realsense2_camera rs_launch.py align_depth.enable:=true
 ```
 
-随后采集一个 episode：
+启动统一运行时。默认控制后端是 ROS2 话题控制：
 
 ```bash
 source /opt/ros/foxy/setup.bash
 cd lerobot_nx
-/usr/bin/python3 record_so101_realsense.py \
+/usr/bin/python3 lerobot_nx.py \
   --leader-port /dev/ttyACM0 \
   --follower-port /dev/ttyACM1 \
   --leader-calibration calibration/leader.json \
@@ -65,44 +75,21 @@ cd lerobot_nx
   --fps 30
 ```
 
-默认相机话题为 `/camera/camera/color/image_raw` 和
-`/camera/camera/aligned_depth_to_color/image_raw`。首次使用前通过
-`ros2 topic list | grep image_raw` 检查实际名称；不同时使用 `--color-topic` 与
-`--depth-topic` 覆盖。
+程序启动后默认处于从臂控制状态。终端无需按回车即可识别下列按键：
 
-采集结果是供工作站转换脚本使用的中间格式：
+| 按键 | 行为 |
+|---|---|
+| `r` | 结束当前控制后端，进入示教并创建新 episode |
+| `c` | 完成当前 episode，返回从臂控制状态 |
+| `q` | 结束当前状态并退出程序 |
 
-```text
-episode_YYYYMMDD_HHMMSS/
-  episode.json                         完成标记与任务元数据
-  samples.jsonl                        追加写入的关节与图像索引
-  leader_calibration.json
-  follower_calibration.json
-  rgb/000000_<monotonic-ns>.jpg
-  depth/000000_<monotonic-ns>.png
-```
+首次启动需要在终端按回车确认工作空间安全。对于无人值守启动，可追加
+`--skip-start-prompt`，但仅应在已验证机械臂周围安全的场景使用。
 
-`action_position_deg` 是经单周期安全限制后实际发给从臂的命令，转换时应写为
-LeRobot 的 `action`；`follower_position_deg` 应写为 `observation.state`。`Ctrl+C`
-会正常结束 episode 并失能从臂扭矩。异常中断的 episode 会维持 `recording` 状态，转换器应默认拒绝。
+## 从臂控制状态
 
-## 模式二：话题控制
-
-该模式供 NX 上的 LeRobot 推理节点、其他本地控制程序或云端命令桥接使用。它不订阅相机，
-也不记录数据。
-
-```bash
-source /opt/ros/foxy/setup.bash
-cd lerobot_nx
-/usr/bin/python3 topic_control_so101.py \
-  --follower-port /dev/ttyACM1 \
-  --follower-calibration calibration/follower.json \
-  --fps 30
-```
-
-仅一个进程可以使用 `/dev/ttyACM1`，不可与采集模式同时启动。控制器收到有效命令前保持扭矩失能；
-默认连续 0.5 秒未收到有效命令时再次失能。只有确认动作发布频率稳定后，才调整
-`--command-timeout-s`。
+默认 `--control-backend ros2`。控制器订阅控制命令，并以设置的 `--fps` 发布当前状态。
+收到第一条合法命令前保持从臂扭矩失能；连续默认 0.5 秒未收到新命令时再次失能，避免执行陈旧动作。
 
 所有关节数组使用以下严格顺序，数值单位为标定后的角度：
 
@@ -114,35 +101,43 @@ cd lerobot_nx
 |---|---|---|---|
 | `/so101/control/command` | `std_msgs/Float64MultiArray` | 订阅 | 期望从臂关节位置，六个角度值 |
 | `/so101/follower/state` | `std_msgs/Float64MultiArray` | 发布 | 当前从臂关节位置，六个角度值 |
-| `/so101/leader/state` | `std_msgs/Float64MultiArray` | 发布 | 同时提供主臂参数时发布主臂状态 |
+| `/so101/leader/state` | `std_msgs/Float64MultiArray` | 发布 | 当前主臂关节位置，六个角度值 |
 | `/so101/control/action` | `std_msgs/Float64MultiArray` | 发布 | 实际发送给从臂的安全限制后动作 |
 | `/so101/status` | `std_msgs/String` | 发布 | JSON 格式的状态、关节顺序和硬件错误 |
 
-可用下列命令进行台架测试。发布频率必须高于超时阈值：
+台架测试命令如下。发布频率必须高于超时阈值：
 
 ```bash
 ros2 topic pub -r 30 /so101/control/command std_msgs/msg/Float64MultiArray \
   "{data: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}"
 ```
 
-## 云端推理入口
+使用 `--control-backend cloud` 可选择云端转发控制的预留后端。当前它只完成相同的
+生命周期和安全停机结构，不连接网络也不向电机下发动作。未来 WebSocket、MQTT、gRPC 或
+HTTP 适配器应实现为该后端，而不是直接操作串口。
 
-`cloud_command_gateway.py` 是云端推理传输与机械臂执行之间的明确边界。它接收
-`/so101/cloud/action` 上的六个标定角度值，检查长度和绝对值范围后，转发到
-`/so101/control/command`。硬件控制器始终是唯一串口拥有者，并继续执行新鲜度和相对位移检查。
+## 主从示教状态
 
-```bash
-source /opt/ros/foxy/setup.bash
-cd lerobot_nx
-/usr/bin/python3 cloud_command_gateway.py
+按 `r` 后，程序创建一个 episode，并开始订阅默认的 RealSense 话题：
+
+- `/camera/camera/color/image_raw`
+- `/camera/camera/aligned_depth_to_color/image_raw`
+
+首次使用前通过 `ros2 topic list | grep image_raw` 检查实际名称；不同时传入
+`--color-topic` 与 `--depth-topic`。需要仅记录 RGB 时传入 `--no-depth`。
+
+在收到新鲜的彩色和深度帧以前，从臂保持扭矩失能。采集时，主臂位置驱动从臂，程序写入
+RGB JPEG、深度 PNG、关节状态、实际动作、时间戳和两份标定文件。按 `c` 后正常结束 episode：
+
+```text
+episode_YYYYMMDD_HHMMSS/
+  episode.json                         完成标记与任务元数据
+  samples.jsonl                        追加写入的关节与图像索引
+  leader_calibration.json
+  follower_calibration.json
+  rgb/000000_<monotonic-ns>.jpg
+  depth/000000_<monotonic-ns>.png
 ```
 
-| 话题 | 类型 | 方向 | 含义 |
-|---|---|---|---|
-| `/so101/cloud/action` | `std_msgs/Float64MultiArray` | 订阅 | 由云端传输适配器送入的动作 |
-| `/so101/control/command` | `std_msgs/Float64MultiArray` | 发布 | 经校验后供话题控制器消费的本地命令 |
-| `/so101/cloud/status` | `std_msgs/String` | 发布 | JSON 格式的转发或拒绝状态 |
-
-云端传输本身有意保持独立。部署在 NX 的 WebSocket、MQTT、gRPC 或 HTTP 适配器只能向
-`/so101/cloud/action` 发布，不能打开串口或直接写电机总线。这样可以将传输重连、鉴权和模型
-版本切换隔离在硬件安全边界之外。
+该目录是工作站转换脚本的中间格式。`action_position_deg` 是实际发给从臂的命令，转换时应写为
+LeRobot 的 `action`；`follower_position_deg` 应写为 `observation.state`。
