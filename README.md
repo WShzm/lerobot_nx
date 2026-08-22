@@ -11,15 +11,24 @@
 按 `q` 或 `Ctrl+C` 安全退出。任意切换都会先失能从臂扭矩，因此两个状态不会同时占用或控制机械臂。
 
 ```text
-lerobot_nx.py           唯一入口和命令行参数
-so101_nx/
+lerobot_nx.py           唯一入口
+config.py               命令行参数、参数校验与 ROS2 话题约定
+state/
   runtime.py            双状态状态机与状态切换
-  control.py            ROS2 话题控制后端和云端控制预留接口
-  teaching.py            主从示教与原始 episode 写入
-  keyboard.py            r、c、q 非阻塞键盘读取
-  calibration.py         LeRobot 标定 JSON 与角度/编码器刻度转换
-  feetech.py             STS3215 串口控制、标定校验与扭矩控制
-  ros_camera.py          RealSense ROS2 彩色和对齐深度图像订阅
+  teaching.py           主从示教会话的节拍调度与编排
+  storage.py            episode 目录、样本行与图像写入
+  control/
+    base.py             控制后端生命周期接口
+    ros2_backend.py     ROS2 话题控制后端
+    cloud_backend.py    云端控制预留接口
+hardware/
+  motors/
+    joints.py           关节名称、电机 ID 与编码器分辨率约定
+    calibration.py      LeRobot 标定 JSON 与角度/编码器刻度转换
+    safety.py           单周期目标增量限制
+    feetech.py          STS3215 串口控制、标定校验与扭矩控制
+  camera.py             RealSense ROS2 彩色和对齐深度图像订阅
+  keyboard.py           r、c、q 非阻塞键盘读取
 ```
 
 该工程不导入 LeRobot、PyTorch、Hugging Face 数据集或视频编码器。

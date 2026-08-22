@@ -10,7 +10,7 @@ except ImportError as exc:
     raise SystemExit("缺少 Feetech SDK，请使用 ROS2 的 Python 解释器安装 requirements.txt。") from exc
 
 from .calibration import Calibration, raw_to_degrees
-from .constants import JOINT_NAMES, MOTOR_IDS
+from .joints import JOINT_NAMES, MOTOR_IDS
 
 # STS3215 控制表地址。
 ADDR_MIN_POSITION_LIMIT = 9

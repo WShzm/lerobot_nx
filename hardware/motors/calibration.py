@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict
 
-from .constants import JOINT_NAMES, STS3215_RESOLUTION
+from .joints import JOINT_NAMES, STS3215_RESOLUTION
 
 
 @dataclass(frozen=True)

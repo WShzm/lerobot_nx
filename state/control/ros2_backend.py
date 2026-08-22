@@ -1,4 +1,4 @@
-"""从臂控制状态的可替换后端。"""
+"""默认控制后端：订阅 ROS2 关节命令并发布状态。"""
 
 from __future__ import annotations
 
@@ -6,47 +6,20 @@ import json
 import logging
 import math
 import time
-from abc import ABC, abstractmethod
 from typing import Dict, List, Optional
 
 from rclpy.node import Node
 from std_msgs.msg import Float64MultiArray, String
 
-from .calibration import degrees_to_raw
-from .constants import ACTION_TOPIC, COMMAND_TOPIC, FOLLOWER_STATE_TOPIC, JOINT_NAMES, LEADER_STATE_TOPIC, STATUS_TOPIC
-from .feetech import FeetechArm
+from config import ACTION_TOPIC, COMMAND_TOPIC, FOLLOWER_STATE_TOPIC, LEADER_STATE_TOPIC, STATUS_TOPIC
+from hardware.motors.calibration import degrees_to_raw
+from hardware.motors.feetech import FeetechArm
+from hardware.motors.joints import JOINT_NAMES
+from hardware.motors.safety import clip_goals
 
-LOGGER = logging.getLogger("so101_nx.control")
+from .base import ControlBackend
 
-
-def _clip_goals(
-    target_degrees: Dict[str, float], follower_degrees: Dict[str, float], max_delta_degrees: float
-) -> Dict[str, float]:
-    if max_delta_degrees <= 0:
-        return target_degrees
-    return {
-        joint: max(
-            follower_degrees[joint] - max_delta_degrees,
-            min(follower_degrees[joint] + max_delta_degrees, target_degrees[joint]),
-        )
-        for joint in JOINT_NAMES
-    }
-
-
-class ControlBackend(ABC):
-    """从臂控制状态的统一生命周期接口。"""
-
-    @abstractmethod
-    def start(self) -> None:
-        """进入从臂控制状态。"""
-
-    @abstractmethod
-    def step(self) -> None:
-        """推进一次控制周期。"""
-
-    @abstractmethod
-    def stop(self) -> None:
-        """退出从臂控制状态并使机械臂安全停机。"""
+LOGGER = logging.getLogger("state.control")
 
 
 class RosTopicControl(Node, ControlBackend):
@@ -144,7 +117,7 @@ class RosTopicControl(Node, ControlBackend):
                 return
 
             target = dict(zip(JOINT_NAMES, self.last_command))
-            action_degrees = _clip_goals(target, follower_degrees, self.max_relative_target_deg)
+            action_degrees = clip_goals(target, follower_degrees, self.max_relative_target_deg)
             action_raw = {
                 joint: degrees_to_raw(action_degrees[joint], self.follower.calibration[joint])
                 for joint in JOINT_NAMES
@@ -165,20 +138,3 @@ class RosTopicControl(Node, ControlBackend):
         self.follower.disable_torque()
         self.torque_enabled = False
         self._publish_status("stopped")
-
-
-class CloudForwardControl(ControlBackend):
-    """云端转发控制的占位后端，不执行网络通信或电机命令。"""
-
-    def __init__(self, follower: FeetechArm) -> None:
-        self.follower = follower
-
-    def start(self) -> None:
-        self.follower.configure_follower()
-        LOGGER.warning("已选择云端转发控制，但该后端目前仅预留结构，保持从臂扭矩失能。")
-
-    def step(self) -> None:
-        return
-
-    def stop(self) -> None:
-        self.follower.disable_torque()
