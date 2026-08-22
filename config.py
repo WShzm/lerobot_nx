@@ -32,10 +32,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--command-topic", default=COMMAND_TOPIC, help="ROS2 控制命令话题")
     parser.add_argument("--command-timeout-s", type=float, default=0.5, help="控制命令超时秒数")
     parser.add_argument("--max-relative-target-deg", type=float, default=15.0, help="单周期最大目标变化角度")
-    parser.add_argument("--color-topic", default="/camera/camera/color/image_raw", help="RealSense 彩色图像话题")
+    parser.add_argument("--color-topic", default="/camera/color/image_raw", help="RealSense 彩色图像话题")
     parser.add_argument(
         "--depth-topic",
-        default="/camera/camera/aligned_depth_to_color/image_raw",
+        default="/camera/aligned_depth_to_color/image_raw",
         help="RealSense 对齐深度图像话题",
     )
     parser.add_argument("--no-depth", action="store_true", help="示教时不记录深度图像")
