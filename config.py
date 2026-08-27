@@ -22,7 +22,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--follower-calibration", type=Path, required=True, help="从臂 LeRobot 标定 JSON")
     parser.add_argument("--output-root", type=Path, default=Path("/data/so101_raw"), help="示教原始数据目录")
     parser.add_argument("--task", default="", help="写入每个 episode 元数据的任务描述")
-    parser.add_argument("--fps", type=float, default=30.0, help="控制和采集频率")
+    parser.add_argument("--fps", type=float, default=30.0, help="示教采集与主从跟随频率")
+    parser.add_argument("--control-fps", type=float, default=60.0, help="从臂控制频率，控制模式")
     parser.add_argument(
         "--control-backend",
         choices=("ros2", "cloud"),
@@ -46,6 +47,8 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.fps <= 0:
         parser.error("--fps 必须为正数")
+    if args.control_fps <= 0:
+        parser.error("--control-fps 必须为正数")
     if args.command_timeout_s <= 0:
         parser.error("--command-timeout-s 必须为正数")
     if not 1 <= args.jpeg_quality <= 100:

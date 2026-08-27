@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
 import shutil
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -15,6 +17,10 @@ from hardware.camera import Frame
 from hardware.motors.joints import JOINT_NAMES
 
 LOGGER = logging.getLogger("state.storage")
+
+# 约 2 秒缓冲（30fps）。写盘跟不上时队列写满，主循环阻塞提供背压，
+# 与 LeRobot 官方 ~1s 缓冲的取舍一致：宁可拖慢采集也不静默丢帧。
+IMAGE_QUEUE_SIZE = 64
 
 
 def _next_episode_dir(root: Path) -> Path:
@@ -39,7 +45,11 @@ def _save_frame(frame: Frame, path: Path, params: List[int]) -> None:
 
 
 class EpisodeWriter:
-    """管理一个 episode 的目录、元数据、样本行与图像文件，不参与控制逻辑。"""
+    """管理一个 episode 的目录、元数据、样本行与图像文件，不参与控制逻辑。
+
+    图像编码与写入在独立线程中进行：主循环只把帧放入有界队列（队列满时
+    阻塞，提供背压），不占用采集节拍。
+    """
 
     def __init__(
         self,
@@ -65,6 +75,9 @@ class EpisodeWriter:
         self.depth_dir = None  # type: Optional[Path]
         self.samples_file = None
         self.metadata = {}  # type: Dict[str, Any]
+        self.image_queue = None  # type: Optional[queue.Queue]
+        self.image_thread = None  # type: Optional[threading.Thread]
+        self.worker_error = None  # type: Optional[Exception]
 
     @property
     def is_open(self) -> bool:
@@ -96,32 +109,57 @@ class EpisodeWriter:
         }
         _write_json(self.episode_dir / "episode.json", self.metadata)
         self.samples_file = (self.episode_dir / "samples.jsonl").open("a", encoding="utf-8", buffering=1)
+        self.image_queue = queue.Queue(maxsize=IMAGE_QUEUE_SIZE)
+        self.image_thread = threading.Thread(target=self._image_worker, name="episode-image-writer", daemon=True)
+        self.image_thread.start()
         return self.episode_dir
 
-    def save_images(
+    def _image_worker(self) -> None:
+        while True:
+            item = self.image_queue.get()
+            if item is None:
+                break
+            rgb_path, color, depth_path, depth = item
+            try:
+                _save_frame(color, rgb_path, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality])
+                if depth is not None:
+                    _save_frame(depth, depth_path, [cv2.IMWRITE_PNG_COMPRESSION, 3])
+            except Exception as exc:
+                if self.worker_error is None:
+                    self.worker_error = exc
+                    LOGGER.exception("示教图像写入失败")
+            finally:
+                self.image_queue.task_done()
+
+    def queue_images(
         self, index: int, color: Frame, depth: Optional[Frame]
     ) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
-        """保存彩色和深度图像，返回样本行中的 rgb/depth 元数据。"""
+        """把图像放入写入队列并返回样本行元数据；队列满时阻塞以提供背压。"""
+        if self.worker_error is not None:
+            raise RuntimeError("图像写入线程已失败，终止示教：{}".format(self.worker_error))
         if self.rgb_dir is None or self.episode_dir is None:
             raise RuntimeError("示教采集目录未初始化")
+        if self.image_queue is None:
+            raise RuntimeError("图像写入队列未初始化")
         rgb_name = "{:06d}_{}.jpg".format(index, color.received_monotonic_ns)
-        _save_frame(color, self.rgb_dir / rgb_name, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality])
         rgb_meta = {
             "path": "rgb/{}".format(rgb_name),
             "received_monotonic_ns": color.received_monotonic_ns,
             "ros_timestamp_ns": color.ros_timestamp_ns,
         }
-        if self.depth_topic is None or depth is None:
-            return rgb_meta, None
-        if self.depth_dir is None:
-            raise RuntimeError("深度图像目录未初始化")
-        depth_name = "{:06d}_{}.png".format(index, depth.received_monotonic_ns)
-        _save_frame(depth, self.depth_dir / depth_name, [cv2.IMWRITE_PNG_COMPRESSION, 3])
-        depth_meta = {
-            "path": "depth/{}".format(depth_name),
-            "received_monotonic_ns": depth.received_monotonic_ns,
-            "ros_timestamp_ns": depth.ros_timestamp_ns,
-        }
+        depth_path = None
+        depth_meta = None
+        if self.depth_topic is not None and depth is not None:
+            if self.depth_dir is None:
+                raise RuntimeError("深度图像目录未初始化")
+            depth_name = "{:06d}_{}.png".format(index, depth.received_monotonic_ns)
+            depth_path = self.depth_dir / depth_name
+            depth_meta = {
+                "path": "depth/{}".format(depth_name),
+                "received_monotonic_ns": depth.received_monotonic_ns,
+                "ros_timestamp_ns": depth.ros_timestamp_ns,
+            }
+        self.image_queue.put((self.rgb_dir / rgb_name, color, depth_path, depth))
         return rgb_meta, depth_meta
 
     def append_sample(self, sample: Dict[str, Any]) -> None:
@@ -130,7 +168,16 @@ class EpisodeWriter:
         self.samples_file.write(json.dumps(sample, ensure_ascii=True, separators=(",", ":")) + "\n")
 
     def close(self, num_samples: int, started_ns: int) -> None:
-        """关闭样本文件并把 episode 标记为完成。未打开时不做任何事。"""
+        """停止图像线程、等待队列落盘，并把 episode 标记为完成。未打开时不做任何事。
+
+        约定：队列生产者只有主循环（step），close 也只在主循环两次 tick 之间
+        调用，因此哨兵必为队列最后一项。
+        """
+        if self.image_queue is not None and self.image_thread is not None:
+            self.image_queue.put(None)
+            self.image_thread.join(timeout=10)
+            if self.image_thread.is_alive():
+                LOGGER.warning("图像写入线程未在 10 秒内退出，可能有图像尚未落盘。")
         if self.samples_file is not None:
             self.samples_file.close()
             self.samples_file = None
@@ -139,5 +186,7 @@ class EpisodeWriter:
             self.metadata["ended_wall_time"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
             self.metadata["duration_s"] = (time.monotonic_ns() - started_ns) / 1e9
             self.metadata["num_samples"] = num_samples
+            if self.worker_error is not None:
+                self.metadata["image_write_error"] = str(self.worker_error)
             _write_json(self.episode_dir / "episode.json", self.metadata)
             LOGGER.info("示教结束，已保存 %d 个样本：%s", num_samples, self.episode_dir)

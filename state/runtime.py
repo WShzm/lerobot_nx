@@ -73,7 +73,7 @@ class SO101Runtime:
             backend = RosTopicControl(
                 self.follower,
                 self.leader,
-                self.args.fps,
+                self.args.control_fps,
                 self.args.command_timeout_s,
                 self.args.max_relative_target_deg,
                 self.args.command_topic,

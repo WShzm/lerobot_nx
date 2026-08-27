@@ -115,7 +115,7 @@ class TeachingSession:
             self.torque_enabled = True
         self.follower.write_goal_positions_raw(action_raw)
 
-        rgb_meta, depth_meta = self.writer.save_images(self.count, color, depth)
+        rgb_meta, depth_meta = self.writer.queue_images(self.count, color, depth)
         sample = {
             "sample_index": self.count,
             "timestamp_ns": now_ns,

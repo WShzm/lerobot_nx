@@ -33,6 +33,8 @@ class FeetechArm:
         self.calibration = calibration
         self.port = scs.PortHandler(port_name)
         self.packet = scs.PacketHandler(0)
+        # 同步读取器创建一次、复用同一实例，每次读取前重新设置参数。
+        self.sync_reader = scs.GroupSyncRead(self.port, self.packet, 0, 0)
         self.connected = False
 
     def connect(self) -> None:
@@ -65,8 +67,20 @@ class FeetechArm:
         return int(value)
 
     def read_positions_raw(self) -> Dict[str, int]:
+        """用一次广播同步读取 6 个关节的当前位置，替代逐关节轮询。"""
+        self.sync_reader.clearParam()
+        self.sync_reader.start_address = ADDR_PRESENT_POSITION
+        self.sync_reader.data_length = 2
+        for joint, motor_id in MOTOR_IDS.items():
+            if not self.sync_reader.addParam(motor_id):
+                raise RuntimeError("无法为 {} 加入同步读取队列".format(joint))
+        comm_result = self.sync_reader.txRxPacket()
+        if comm_result != scs.COMM_SUCCESS:
+            raise ConnectionError(
+                "{}: 同步读取当前位置失败：{}".format(self.port_name, self.packet.getTxRxResult(comm_result))
+            )
         return {
-            joint: self._read_2byte(motor_id, ADDR_PRESENT_POSITION, "读取 {} 的当前位置".format(joint))
+            joint: int(self.sync_reader.getData(motor_id, ADDR_PRESENT_POSITION, 2))
             for joint, motor_id in MOTOR_IDS.items()
         }
 
