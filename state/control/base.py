@@ -73,7 +73,7 @@ class ControlBackend(Node):
         return action_degrees
 
     def _publish_status(self, state: str, **extra: object) -> None:
-        if state == self.last_status_state and state not in ("hardware_error", "invalid_command"):
+        if state == self.last_status_state and state not in ("hardware_error", "invalid_command", "invalid_chunk"):
             return
         payload = {
             "state": state,

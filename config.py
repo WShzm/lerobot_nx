@@ -34,6 +34,18 @@ class Config:
     command_timeout_s = 0.5  # 控制命令超时秒数
     max_relative_target_deg = 15.0  # 单周期最大目标变化角度
 
+    # --- 云端 VLA 推理（control_backend = "cloud" 时生效）---
+    vla_obs_url = "http://192.168.1.7:8010"  # 观测包上行目标（NDJSON over TCP）
+    vla_chunk_url = "http://192.168.1.7:8001"  # chunk 下行来源（NDJSON over TCP）
+    robot_id = "so101_nx_01"
+    protocol_version = 1
+    obs_sample_fps = 10.0  # 观测组包频率
+    max_obs_queue = 4  # 观测有界队列长度，满时丢最旧
+    model_fps = 30.0  # chunk 动作步默认间隔，服务端消息带 fps 时以消息为准
+    exec_steps = 0  # 每 chunk 执行的前缀步数；0 = 全部执行，服务端 exec_steps_hint 优先
+    max_pending_chunks = 2  # 队列中最多保留的 chunk 数（含正在执行的）
+    inference_timeout_s = 3.0  # 超过该时长没有新 chunk 时失能从臂
+
     # --- 其他 ---
     skip_start_prompt = False  # True 跳过安全确认
     log_level = logging.INFO
@@ -57,3 +69,9 @@ class Config:
             raise ValueError("max_image_age_ms 必须为正数")
         if self.control_backend not in ("ros2", "cloud"):
             raise ValueError("control_backend 只支持 ros2 或 cloud")
+        if self.obs_sample_fps <= 0 or self.model_fps <= 0:
+            raise ValueError("obs_sample_fps 与 model_fps 必须为正数")
+        if self.inference_timeout_s <= 0:
+            raise ValueError("inference_timeout_s 必须为正数")
+        if self.max_obs_queue < 1 or self.max_pending_chunks < 1:
+            raise ValueError("max_obs_queue 与 max_pending_chunks 必须 >= 1")

@@ -80,7 +80,7 @@ class SO101Runtime:
         if self.config.control_backend == "ros2":
             backend = RosTopicControl(self.follower, self.leader, self.config)
         else:
-            backend = CloudForwardControl(self.follower, self.leader, self.config)
+            backend = CloudForwardControl(self.follower, self.leader, self.config, self.executor)
         self.executor.add_node(backend)
         self.control = backend
         self.control.start()
