@@ -20,7 +20,8 @@ state/
   control/
     base.py             控制后端
     ros2_backend.py     ROS2 话题控制
-    cloud_backend.py    云端控制预留
+    cloud_backend.py    云端 VLA 推理控制
+    vla_client.py        裸 TCP NDJSON 客户端（观测上行 / chunk 下行）
 hardware/
   motors/
     joints.py           关节名称、电机 ID 与编码器分辨率约定
@@ -44,37 +45,24 @@ cd lerobot_nx
 sudo usermod -aG dialout "$USER"
 ```
 
-将由 LeRobot 为这对实际主从臂生成的标定 JSON 复制到 NX。启动时，工程会对比 JSON 与电机 EEPROM 中的关节行程。
-
 ## 启动
 
 ```bash
 python3 ./lerobot_nx.py
 ```
 
-主臂配置（`leader_port`、`leader_calibration`）保持 `None` 时为仅从臂模式：
-只支持 ROS2 话题控制，`/so101/leader/state` 不再发布，按 `r` 不会进入示教。
+主臂配置（`leader_port`、`leader_calibration`）保持 `None` 时为仅从臂模式
 
-示教状态需要 RealSense。
-
+RealSense
 ```bash
 source /opt/ros/foxy/setup.bash
 ros2 launch realsense2_camera rs_launch.py align_depth.enable:=true
 ```
 
-程序启动后默认处于从臂控制状态。
-
-| 按键 | 行为 |
-|---|---|
-| `r` | 进入示教状态 |
-| `c` | 进入从臂控制状态 |
-| `q` | 结束当前状态并退出程序 |
-
-首次启动需要在终端按回车确认工作空间安全。
+程序启动后默认处于从臂控制状态。首次启动需要在终端按回车确认工作空间安全。
 ## 从臂控制状态
 
-默认以60hz发布当前状态；示教采集与主从跟随频率由 `Config.fps`（默认 30）控制。  
-收到第一条合法命令前保持从臂扭矩失能；连续默认 0.5 秒未收到新命令时再次失能，避免执行陈旧动作。
+默认以60hz发布当前状态；示教采集与主从跟随频率由 `Config.fps`（默认 30）控制。收到第一条合法命令前保持从臂扭矩失能；连续默认 0.5 秒未收到新命令时再次失能。
 
 关节数组控制顺序，单位为标定后的角度：
 
@@ -90,28 +78,47 @@ ros2 launch realsense2_camera rs_launch.py align_depth.enable:=true
 | `/so101/control/action` | `std_msgs/Float64MultiArray` | 发布 | 实际发送给从臂的安全限制后动作 |
 | `/so101/status` | `std_msgs/String` | 发布 | JSON 格式的状态、关节顺序和硬件错误 |
 
-台架测试命令如下。发布频率必须高于超时阈值：
+测试命令（发布频率必须高于超时阈值）：
 
 ```bash
 ros2 topic pub -r 30 /so101/control/command std_msgs/msg/Float64MultiArray \
   "{data: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}"
 ```
 
-在 `config.py` 中设置 `control_backend = "cloud"` 可选择云端转发控制的预留后端。当前它只完成相同的
-生命周期和安全停机结构，不连接网络也不向电机下发动作。未来 WebSocket、MQTT、gRPC 或
-HTTP 适配器应实现为该后端，而不是直接操作串口。
+在 `config.py` 中设置 `control_backend = "cloud"` 可选择云端 VLA 推理后端：NX 持续上传观测包，
+VLA 服务返回动作 chunk，后端在 60Hz 主循环里按时间步进执行。限幅、扭矩生命周期与异常兜底
+与 ROS2 后端完全相同（继承自基类）。
+
+### 云端 VLA 控制
+
+- **观测端口**（`vla_obs_url`）：NX 主动连接并逐行推送观测包，服务端只收不回。包体：
+  ```json
+  {"protocol_version": 1, "robot_id": "so101_nx_01", "timestamp_ns": 0,
+   "image_stamp_ns": 0, "image_age_ms": 0.0, "image_jpeg_b64": "...",
+   "joint_names": ["shoulder_pan", "..."], "joint_degrees": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}
+  ```
+  图像为 base64 JPEG（`jpeg_quality` 控制质量），超过 `max_image_age_ms` 的陈旧帧不组包，
+  实际图像年龄随包上报。关节位置与图像在同一处读取，但两者并非严格同刻，以
+  `image_age_ms` 为准。
+- **chunk 端口**（`vla_chunk_url`）：NX 主动连接后阻塞读行，服务端按自身频率推送：
+  ```json
+  {"protocol_version": 1, "robot_id": "so101_nx_01", "chunk_id": 1,
+   "obs_timestamp_ns": 0, "actions": [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]],
+   "fps": 30.0, "exec_steps_hint": 0}
+  ```
+
+内部数据流：组包线程（生产者）→ 有界队列（满丢最旧）→ 上传线程（消费者）→ 观测端口；
+chunk 订阅线程校验后按到达时间展开成带截止时间的步进队列，60Hz 主循环按时间戳消费。
+chunk 间隔内在最后目标上位置保持；断线按指数退避（上限 5 秒）自动重连；超过
+`inference_timeout_s` 没有新 chunk 时失能从臂，恢复后重新使能。
+
 
 ## 主从示教状态
 
-按 `r` 进入并订阅 `Config.color_topic` / `Config.depth_topic` 指定的话题（默认
-`/camera/camera/color/image_raw` 和 `/camera/camera/aligned_depth_to_color/image_raw`）。
-首次使用前通过 `ros2 topic list | grep image_raw` 检查实际名称，不同则在 `config.py`
-中修改。需要仅记录 RGB 时设置 `record_depth = False`。
+仅记录 RGB 时设置 `record_depth = False`。
 
-在收到新鲜的彩色和深度帧以前，从臂保持扭矩失能。采集时，主臂位置驱动从臂，程序写入
-RGB JPEG、深度 PNG、关节状态、实际动作、时间戳和两份标定文件。关节位置读取使用
-`GroupSyncRead` 一次广播读取全部 6 个关节；图像编码与写入在独立线程中进行（带背压缓冲，
-队列满时放慢采集而不是丢帧）。按 `c` 后正常结束 episode：
+在收到新鲜的彩色和深度帧以前，从臂保持扭矩失能。采集时程序写入
+RGB、深度、关节状态、实际动作、时间戳和两份标定文件。按 `c` 后正常结束 episode：
 
 ```text
 episode_YYYYMMDD_HHMMSS/
