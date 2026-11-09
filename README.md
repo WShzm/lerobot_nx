@@ -48,7 +48,11 @@ sudo usermod -aG dialout "$USER"
 
 ## 启动
 
-主臂参数（`--leader-port`、`--leader-calibration`）可整体省略，此时为仅从臂模式：
+```bash
+python3 ./lerobot_nx.py
+```
+
+主臂配置（`leader_port`、`leader_calibration`）保持 `None` 时为仅从臂模式：
 只支持 ROS2 话题控制，`/so101/leader/state` 不再发布，按 `r` 不会进入示教。
 
 示教状态需要 RealSense。
@@ -66,12 +70,10 @@ ros2 launch realsense2_camera rs_launch.py align_depth.enable:=true
 | `c` | 进入从臂控制状态 |
 | `q` | 结束当前状态并退出程序 |
 
-首次启动需要在终端按回车确认工作空间安全。对于无人值守启动，可追加
-`--skip-start-prompt`，但仅应在已验证机械臂周围安全的场景使用。
-
+首次启动需要在终端按回车确认工作空间安全。
 ## 从臂控制状态
 
-默认以60hz发布当前状态；示教采集与主从跟随频率由 `--fps`（默认 30）控制。  
+默认以60hz发布当前状态；示教采集与主从跟随频率由 `Config.fps`（默认 30）控制。  
 收到第一条合法命令前保持从臂扭矩失能；连续默认 0.5 秒未收到新命令时再次失能，避免执行陈旧动作。
 
 关节数组控制顺序，单位为标定后的角度：
@@ -95,19 +97,16 @@ ros2 topic pub -r 30 /so101/control/command std_msgs/msg/Float64MultiArray \
   "{data: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}"
 ```
 
-使用 `--control-backend cloud` 可选择云端转发控制的预留后端。当前它只完成相同的
+在 `config.py` 中设置 `control_backend = "cloud"` 可选择云端转发控制的预留后端。当前它只完成相同的
 生命周期和安全停机结构，不连接网络也不向电机下发动作。未来 WebSocket、MQTT、gRPC 或
 HTTP 适配器应实现为该后端，而不是直接操作串口。
 
 ## 主从示教状态
 
-按 `r` 进入并订阅默认的 RealSense 话题：
-
-- `/camera/camera/color/image_raw`
-- `/camera/camera/aligned_depth_to_color/image_raw`
-
-首次使用前通过 `ros2 topic list | grep image_raw` 检查实际名称；不同时传入
-`--color-topic` 与 `--depth-topic`。需要仅记录 RGB 时传入 `--no-depth`。
+按 `r` 进入并订阅 `Config.color_topic` / `Config.depth_topic` 指定的话题（默认
+`/camera/camera/color/image_raw` 和 `/camera/camera/aligned_depth_to_color/image_raw`）。
+首次使用前通过 `ros2 topic list | grep image_raw` 检查实际名称，不同则在 `config.py`
+中修改。需要仅记录 RGB 时设置 `record_depth = False`。
 
 在收到新鲜的彩色和深度帧以前，从臂保持扭矩失能。采集时，主臂位置驱动从臂，程序写入
 RGB JPEG、深度 PNG、关节状态、实际动作、时间戳和两份标定文件。关节位置读取使用

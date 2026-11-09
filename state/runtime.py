@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-import argparse
 import logging
 import sys
 import time
+from typing import Optional
 
 import rclpy
 from rclpy.executors import SingleThreadedExecutor
 
-from config import parse_args
+from config import Config
 
 from hardware.keyboard import KeyboardReader
 from hardware.motors.calibration import load_calibration
@@ -30,16 +30,16 @@ STATE_TEACHING = "teaching"
 class SO101Runtime:
     """只在从臂控制和主从示教两个状态间切换的状态机。"""
 
-    def __init__(self, args: argparse.Namespace) -> None:
-        self.args = args
+    def __init__(self, config: Config) -> None:
+        self.config = config
         self.executor = SingleThreadedExecutor()
-        # 仅从臂模式：不传主臂串口时 leader 为 None，只支持话题控制，不支持示教。
+        # 仅从臂模式：leader_port 为 None 时 leader 为 None
         self.leader = (
-            FeetechArm(args.leader_port, load_calibration(args.leader_calibration))
-            if args.leader_port
+            FeetechArm(config.leader_port, load_calibration(config.leader_calibration))
+            if config.leader_port
             else None
         )
-        self.follower = FeetechArm(args.follower_port, load_calibration(args.follower_calibration))
+        self.follower = FeetechArm(config.follower_port, load_calibration(config.follower_calibration))
         self.state = ""
         self.control = None  # type: Optional[ControlBackend]
         self.teaching = None  # type: Optional[TeachingSession]
@@ -50,7 +50,7 @@ class SO101Runtime:
             self.leader.connect()
             self.leader.verify_position_limits()
             self.leader.disable_torque()
-            
+
         self.follower.connect()
         self.follower.verify_position_limits()
         self.follower.disable_torque()
@@ -78,15 +78,8 @@ class SO101Runtime:
         if self.state == STATE_CONTROL:
             return
         self._leave_teaching()
-        if self.args.control_backend == "ros2":
-            backend = RosTopicControl(
-                self.follower,
-                self.leader,
-                self.args.control_fps,
-                self.args.command_timeout_s,
-                self.args.max_relative_target_deg,
-                self.args.command_topic,
-            )
+        if self.config.control_backend == "ros2":
+            backend = RosTopicControl(self.follower, self.leader, self.config,)
             self.executor.add_node(backend)
         else:
             backend = CloudForwardControl(self.follower)
@@ -99,23 +92,23 @@ class SO101Runtime:
         if self.state == STATE_TEACHING:
             return
         if self.leader is None:
-            LOGGER.warning("仅从臂模式不支持示教：需要连接主臂并传入 --leader-port 与 --leader-calibration。")
+            LOGGER.warning("缺少主臂参数，仅从臂控制")
             return
         self._leave_control()
         self.teaching = TeachingSession(
             self.executor,
             self.leader,
             self.follower,
-            self.args.output_root,
-            self.args.task,
-            self.args.fps,
-            self.args.color_topic,
-            None if self.args.no_depth else self.args.depth_topic,
-            self.args.leader_calibration,
-            self.args.follower_calibration,
-            self.args.jpeg_quality,
-            self.args.max_image_age_ms,
-            self.args.max_relative_target_deg,
+            self.config.output_root,
+            self.config.task,
+            self.config.fps,
+            self.config.color_topic,
+            self.config.depth_topic if self.config.record_depth else None,
+            self.config.leader_calibration,
+            self.config.follower_calibration,
+            self.config.jpeg_quality,
+            self.config.max_image_age_ms,
+            self.config.max_relative_target_deg,
         )
         episode_dir = self.teaching.start()
         self.state = STATE_TEACHING
@@ -133,7 +126,7 @@ class SO101Runtime:
 
     def run(self) -> None:
         self.connect_hardware()
-        if not self.args.skip_start_prompt:
+        if not self.config.skip_start_prompt:
             prompt = "已连接从臂" + ("和主臂" if self.leader is not None else "") + "且扭矩失能。确认工作空间安全后按回车启动。"
             input(prompt)
         self.enter_control()
@@ -167,10 +160,10 @@ class SO101Runtime:
 
 
 def main() -> int:
-    args = parse_args()
-    logging.basicConfig(level=getattr(logging, args.log_level), format="%(asctime)s %(levelname)s %(message)s")
+    config = Config()
+    logging.basicConfig(level=config.log_level, format="%(asctime)s %(levelname)s %(message)s")
     rclpy.init(args=None)
-    runtime = SO101Runtime(args)
+    runtime = SO101Runtime(config)
     try:
         runtime.run()
     except KeyboardInterrupt:

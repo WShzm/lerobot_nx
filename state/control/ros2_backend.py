@@ -11,7 +11,7 @@ from typing import Dict, List, Optional
 from rclpy.node import Node
 from std_msgs.msg import Float64MultiArray, String
 
-from config import ACTION_TOPIC, COMMAND_TOPIC, FOLLOWER_STATE_TOPIC, LEADER_STATE_TOPIC, STATUS_TOPIC
+from config import Config
 from hardware.motors.calibration import degrees_to_raw
 from hardware.motors.feetech import FeetechArm
 from hardware.motors.joints import JOINT_NAMES
@@ -29,28 +29,25 @@ class RosTopicControl(Node, ControlBackend):
         self,
         follower: FeetechArm,
         leader: FeetechArm,
-        control_fps: float,
-        command_timeout_s: float,
-        max_relative_target_deg: float,
-        command_topic: str = COMMAND_TOPIC,
+        config: Config,
     ) -> None:
         Node.__init__(self, "so101_topic_controller")
         self.follower = follower
         self.leader = leader
-        self.period_ns = int(1e9 / control_fps)
-        self.command_timeout_ns = int(command_timeout_s * 1e9)
-        self.max_relative_target_deg = max_relative_target_deg
+        self.period_ns = int(1e9 / config.control_fps)
+        self.command_timeout_ns = int(config.command_timeout_s * 1e9)
+        self.max_relative_target_deg = config.max_relative_target_deg
         self.last_command = None  # type: Optional[List[float]]
         self.last_command_ns = 0
         self.next_tick_ns = 0
         self.torque_enabled = False
         self.last_status_state = ""
-        self.create_subscription(Float64MultiArray, command_topic, self._on_command, 10)
-        self.follower_state_pub = self.create_publisher(Float64MultiArray, FOLLOWER_STATE_TOPIC, 10)
-        self.leader_state_pub = self.create_publisher(Float64MultiArray, LEADER_STATE_TOPIC, 10)
-        self.action_pub = self.create_publisher(Float64MultiArray, ACTION_TOPIC, 10)
-        self.status_pub = self.create_publisher(String, STATUS_TOPIC, 10)
-        self.command_topic = command_topic
+        self.create_subscription(Float64MultiArray, config.command_topic, self._on_command, 10)
+        self.follower_state_pub = self.create_publisher(Float64MultiArray, config.follower_state_topic, 10)
+        self.leader_state_pub = self.create_publisher(Float64MultiArray, config.leader_state_topic, 10)
+        self.action_pub = self.create_publisher(Float64MultiArray, config.action_topic, 10)
+        self.status_pub = self.create_publisher(String, config.status_topic, 10)
+        self.command_topic = config.command_topic
 
     def _publish_status(self, state: str, **extra: object) -> None:
         if state == self.last_status_state and state not in ("hardware_error", "invalid_command"):
