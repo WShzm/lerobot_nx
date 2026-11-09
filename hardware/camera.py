@@ -8,6 +8,9 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 
 import numpy as np
+# 必须先于 cv_bridge 导入：cv_bridge_boost 的 boost::python 注册依赖 cv2 已加载，
+# 否则以 "initialization of cv_bridge_boost raised unreported exception" 失败。
+import cv2
 from cv_bridge import CvBridge
 from rclpy.node import Node
 from sensor_msgs.msg import Image

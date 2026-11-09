@@ -11,9 +11,11 @@ import rclpy
 from rclpy.executors import SingleThreadedExecutor
 
 from config import parse_args
+
 from hardware.keyboard import KeyboardReader
 from hardware.motors.calibration import load_calibration
 from hardware.motors.feetech import FeetechArm
+
 from .control.base import ControlBackend
 from .control.cloud_backend import CloudForwardControl
 from .control.ros2_backend import RosTopicControl
@@ -31,7 +33,12 @@ class SO101Runtime:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
         self.executor = SingleThreadedExecutor()
-        self.leader = FeetechArm(args.leader_port, load_calibration(args.leader_calibration))
+        # 仅从臂模式：不传主臂串口时 leader 为 None，只支持话题控制，不支持示教。
+        self.leader = (
+            FeetechArm(args.leader_port, load_calibration(args.leader_calibration))
+            if args.leader_port
+            else None
+        )
         self.follower = FeetechArm(args.follower_port, load_calibration(args.follower_calibration))
         self.state = ""
         self.control = None  # type: Optional[ControlBackend]
@@ -39,11 +46,13 @@ class SO101Runtime:
         self.running = True
 
     def connect_hardware(self) -> None:
-        self.leader.connect()
+        if self.leader is not None:
+            self.leader.connect()
+            self.leader.verify_position_limits()
+            self.leader.disable_torque()
+            
         self.follower.connect()
-        self.leader.verify_position_limits()
         self.follower.verify_position_limits()
-        self.leader.disable_torque()
         self.follower.disable_torque()
 
     def _leave_control(self) -> None:
@@ -89,6 +98,9 @@ class SO101Runtime:
     def enter_teaching(self) -> None:
         if self.state == STATE_TEACHING:
             return
+        if self.leader is None:
+            LOGGER.warning("仅从臂模式不支持示教：需要连接主臂并传入 --leader-port 与 --leader-calibration。")
+            return
         self._leave_control()
         self.teaching = TeachingSession(
             self.executor,
@@ -122,7 +134,8 @@ class SO101Runtime:
     def run(self) -> None:
         self.connect_hardware()
         if not self.args.skip_start_prompt:
-            input("已连接主从臂且扭矩失能。确认工作空间安全后按回车启动。")
+            prompt = "已连接从臂" + ("和主臂" if self.leader is not None else "") + "且扭矩失能。确认工作空间安全后按回车启动。"
+            input(prompt)
         self.enter_control()
         with KeyboardReader() as keyboard:
             while self.running:
@@ -143,11 +156,12 @@ class SO101Runtime:
             self.follower.disable_torque()
         except Exception:
             pass
-        try:
-            self.leader.disable_torque()
-        except Exception:
-            pass
-        self.leader.close()
+        if self.leader is not None:
+            try:
+                self.leader.disable_torque()
+            except Exception:
+                pass
+            self.leader.close()
         self.follower.close()
         self.executor.shutdown()
 
@@ -160,7 +174,7 @@ def main() -> int:
     try:
         runtime.run()
     except KeyboardInterrupt:
-        LOGGER.info("收到 Ctrl+C，正在安全退出。")
+        LOGGER.info("收到 Ctrl+C，正在退出。")
     except Exception as exc:
         LOGGER.exception("运行时失败：%s", exc)
         return 1

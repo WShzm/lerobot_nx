@@ -106,9 +106,11 @@ class RosTopicControl(Node, ControlBackend):
             self.next_tick_ns = now_ns + self.period_ns
         try:
             _, follower_degrees = self.follower.read_positions_degrees()
-            _, leader_degrees = self.leader.read_positions_degrees()
             self._publish_positions(self.follower_state_pub, follower_degrees)
-            self._publish_positions(self.leader_state_pub, leader_degrees)
+            leader_degrees = None
+            if self.leader is not None:
+                _, leader_degrees = self.leader.read_positions_degrees()
+                self._publish_positions(self.leader_state_pub, leader_degrees)
             if self.last_command is None or now_ns - self.last_command_ns > self.command_timeout_ns:
                 if self.torque_enabled:
                     self.follower.disable_torque()
