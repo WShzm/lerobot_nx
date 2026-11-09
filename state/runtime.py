@@ -61,9 +61,8 @@ class SO101Runtime:
         try:
             self.control.stop()
         finally:
-            if isinstance(self.control, RosTopicControl):
-                self.executor.remove_node(self.control)
-                self.control.destroy_node()
+            self.executor.remove_node(self.control)
+            self.control.destroy_node()
             self.control = None
 
     def _leave_teaching(self) -> None:
@@ -79,10 +78,10 @@ class SO101Runtime:
             return
         self._leave_teaching()
         if self.config.control_backend == "ros2":
-            backend = RosTopicControl(self.follower, self.leader, self.config,)
-            self.executor.add_node(backend)
+            backend = RosTopicControl(self.follower, self.leader, self.config)
         else:
-            backend = CloudForwardControl(self.follower)
+            backend = CloudForwardControl(self.follower, self.leader, self.config)
+        self.executor.add_node(backend)
         self.control = backend
         self.control.start()
         self.state = STATE_CONTROL
